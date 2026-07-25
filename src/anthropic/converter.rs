@@ -215,7 +215,8 @@ pub fn map_model(model: &str) -> Option<String> {
             // 精确匹配 5 代，避免命中 legacy claude-3-5-sonnet
             Some("claude-sonnet-5".to_string())
         } else {
-            None
+            // 未命中已知 sonnet 版本（如未来的 sonnet-6）：透传给上游裁决
+            passthrough_unknown_model(&model_lower)
         }
     } else if model_lower.contains("opus") {
         if model_lower.contains("4-8") || model_lower.contains("4.8") {
@@ -227,7 +228,8 @@ pub fn map_model(model: &str) -> Option<String> {
         } else if model_lower.contains("4-6") || model_lower.contains("4.6") {
             Some("claude-opus-4.6".to_string())
         } else {
-            None
+            // 未命中已知 opus 版本（如 opus-5 / 未来版本）：透传给上游裁决
+            passthrough_unknown_model(&model_lower)
         }
     } else if model_lower.contains("haiku") {
         Some("claude-haiku-4.5".to_string())
@@ -236,6 +238,42 @@ pub fn map_model(model: &str) -> Option<String> {
         // Kiro advertises and accepts these ids verbatim, so pass them through unchanged.
         // Scoped to gpt-5* so legacy ids like "gpt-4" stay unsupported.
         Some(model_lower)
+    } else {
+        passthrough_unknown_model(&model_lower)
+    }
+}
+
+/// 兜底透传：未命中上面显式映射、但明显属于 Claude 家族的模型 ID，原样交给上游
+/// `ListAvailableModels` 做最终裁决，而非本地写死白名单一律 400。
+///
+/// 与「动态 /v1/models」保持一致：只要上游真实可用（含未来新版本，如 opus-5 / sonnet-6），
+/// 客户端把 `/v1/models` 列出的 ID 原样发回即可调用，无需每出一个新模型就改这里。
+///
+/// - 先剥掉本地虚构的 `-thinking` 后缀（上游不认；thinking 行为已由
+///   `override_thinking_from_model_name` 依据后缀单独覆写，此处只需还原真实模型 ID）。
+/// - 仅放行含 `claude` / `opus` / `sonnet` / `haiku` 关键字的 ID；其余（拼写错误、
+///   非法名）仍返回 `None` → 400，避免把明显无效的请求打到上游。
+fn passthrough_unknown_model(model_lower: &str) -> Option<String> {
+    let stripped = model_lower
+        .strip_suffix("-thinking")
+        .unwrap_or(model_lower);
+
+    // 排除上游不再服务的 legacy 世代（Claude 1/2/3.x，如 claude-3-5-sonnet、
+    // claude-2.1）：这些一律本地 400，不打到上游。Kiro 服务 4.x+ 与 gen-5。
+    let is_legacy_generation = stripped.contains("claude-1")
+        || stripped.contains("claude-2")
+        || stripped.contains("claude-3");
+    if is_legacy_generation {
+        return None;
+    }
+
+    let is_claude_family = stripped.contains("claude")
+        || stripped.contains("opus")
+        || stripped.contains("sonnet")
+        || stripped.contains("haiku");
+
+    if is_claude_family {
+        Some(stripped.to_string())
     } else {
         None
     }
@@ -258,6 +296,17 @@ pub fn get_context_window_size(model: &str) -> i32 {
                 || mapped == "claude-opus-4.7"
                 || mapped == "claude-opus-4.8"
                 || mapped == "claude-fable-5" =>
+        {
+            1_000_000
+        }
+        // Claude 5 系及以后（含经兜底透传的未来版本，如 opus-5 / sonnet-6 / mythos-5）：
+        // 默认按 1M 上下文估算，避免落到 200K 低估 input_tokens。
+        Some(mapped)
+            if mapped.contains("opus-5")
+                || mapped.contains("sonnet-5")
+                || mapped.contains("sonnet-6")
+                || mapped.contains("mythos-5")
+                || mapped.contains("claude-5") =>
         {
             1_000_000
         }
@@ -1823,6 +1872,53 @@ mod tests {
             Some("claude-opus-4.8".to_string())
         );
         assert_eq!(get_context_window_size("claude-opus-4-8"), 1_000_000);
+    }
+
+    #[test]
+    fn test_map_model_passthrough_unknown_claude_versions() {
+        // 未知的新版本 Claude 模型（如 opus-5 / sonnet-6）透传给上游裁决，而非本地 400
+        assert_eq!(
+            map_model("claude-opus-5"),
+            Some("claude-opus-5".to_string())
+        );
+        assert_eq!(
+            map_model("claude-sonnet-6"),
+            Some("claude-sonnet-6".to_string())
+        );
+        // 剥掉本地虚构的 -thinking 后缀，还原真实上游 ID
+        assert_eq!(
+            map_model("claude-opus-5-thinking"),
+            Some("claude-opus-5".to_string())
+        );
+        // 大小写归一
+        assert_eq!(
+            map_model("Claude-Opus-5"),
+            Some("claude-opus-5".to_string())
+        );
+        // 透传的 gen-5 模型按 1M 上下文估算
+        assert_eq!(get_context_window_size("claude-opus-5"), 1_000_000);
+    }
+
+    #[test]
+    fn test_map_model_rejects_non_claude_garbage() {
+        // 明显非法 / 拼写错误：仍本地 400，不打到上游
+        assert_eq!(map_model("foo-bar"), None);
+        assert_eq!(map_model("gpt-4"), None);
+        assert_eq!(map_model(""), None);
+    }
+
+    #[test]
+    fn test_map_model_passthrough_rejects_legacy_generations() {
+        // 走兜底透传路径的 legacy sonnet/opus 世代（上游不服务）必须本地 400
+        assert_eq!(map_model("claude-3-5-sonnet-20241022"), None);
+        assert_eq!(map_model("claude-3-opus-20240229"), None);
+        assert_eq!(map_model("claude-2.1"), None);
+        // 注：haiku 分支是既有行为——无条件归一到 claude-haiku-4.5（不经过兜底），
+        // 故 claude-3-haiku 会被映射为 4.5，此处不改变该行为。
+        assert_eq!(
+            map_model("claude-3-haiku-20240307"),
+            Some("claude-haiku-4.5".to_string())
+        );
     }
 
     #[test]
