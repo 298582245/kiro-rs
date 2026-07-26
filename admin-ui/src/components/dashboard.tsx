@@ -97,6 +97,8 @@ import {
 } from "@/hooks/use-credentials";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { useFailureStats } from "@/hooks/use-traces";
+import { useByCredential } from "@/hooks/use-stats";
+import type { StatsRange } from "@/types/api";
 import { useGroupOptions } from "@/hooks/use-groups";
 import { useRectSelect } from "@/hooks/use-rect-select";
 import {
@@ -243,6 +245,15 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
   const setPriority = useSetPriority();
   const { data: updateCheck } = useUpdateCheck();
   const { data: failureStatsMap } = useFailureStats();
+  // 每个凭据的 credit 消耗统计：按可切换的时间范围查 by-credential，构建 id→credits 映射
+  const [creditRange, setCreditRange] = useState<StatsRange>("24h");
+  const { data: creditDist } = useByCredential({
+    range: creditRange,
+    granularity: creditRange === "24h" ? "hour" : "day",
+  });
+  const creditsMap = new Map<number, number>(
+    (creditDist ?? []).map((d) => [d.credentialId, d.credits]),
+  );
   const groupOptions = useGroupOptions();
 
   // 分组筛选：'' = 全部；'__none__' = 仅显示未分组；其他 = 按分组名筛选
@@ -1390,6 +1401,23 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
                   </button>
                 )}
               </div>
+              {/* Credit 统计时间范围：控制每个凭据卡片上显示的 credit 消耗窗口 */}
+              <Select
+                value={creditRange}
+                onValueChange={(v) => setCreditRange(v as StatsRange)}
+              >
+                <SelectTrigger
+                  className="h-8 w-full rounded-full border-border bg-card/60 px-3 backdrop-blur sm:w-[130px]"
+                  title="Credit 统计时间范围"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="24h">Credit·24h</SelectItem>
+                  <SelectItem value="7d">Credit·7 天</SelectItem>
+                  <SelectItem value="30d">Credit·30 天</SelectItem>
+                </SelectContent>
+              </Select>
               <Select
                 value={groupFilter || "all"}
                 onValueChange={(v) => setGroupFilter(v === "all" ? "" : v)}
@@ -1783,6 +1811,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
                         handleRefreshBalance(credential.id)
                       }
                       failureStats={failureStatsMap?.[String(credential.id)]}
+                      credits={creditsMap.get(credential.id)}
                     />
                   ))}
                 </div>

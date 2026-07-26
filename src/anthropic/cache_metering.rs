@@ -448,30 +448,28 @@ fn extract_segments(req: &MessagesRequest, key_id: u64) -> (Vec<Segment>, u32) {
         }
     }
 
-    // 2. system —— 跳过「首个带 cache_control 的 block 之前」的动态头部。
+    // 2. system —— 逐块判定：只有带 cache_control 的 block 才进哈希链（客户端明确
+    //    标记为「可缓存的稳定前缀」）；不带 cache_control 的 block 一律视为动态头部，
+    //    仅计入 prompt_total 分母，不进哈希、不进缓存段。
     //
-    // Claude Code 在 system 数组最前面注入一个**每轮变化**的小 block（如当前
-    // 时间 / session 标记），且故意**不打 cache_control**；真正稳定的大段
-    // （工具说明、规则）才带 cache_control。若从该动态头开始累积哈希，整条前缀
-    // 链会被它每轮污染、全部 miss——这正是实测「只创建不命中」的根因。
+    // Claude Code 在 system 里注入**每轮变化**的小 block（当前时间 / session 标记 /
+    // 环境信息），且故意**不打 cache_control**；真正稳定的大段（工具说明、规则）才带
+    // cache_control。旧逻辑只跳「首个 cache_control 之前」的 block，若动态 block 夹在
+    // 两个稳定 block 中间（`[稳定(cc), 动态, 稳定(cc)]`）就漏网、每轮污染整条前缀链、
+    // 前几次全 miss。改为逐块判定后，动态 block 无论出现在什么位置都被剔除。
     //
-    // 因此：当 system 中存在至少一个带 cache_control 的 block 时，跳过其之前的
-    // 所有 block，从首个 cache_control 边界开始累积（对齐客户端的稳定缓存意图）。
-    // 若没有任何 cache_control，则全部纳入（无从判断动态边界，保持原样）。
+    // 兜底：若整个 system 数组**没有任何** cache_control（客户端未启用缓存），无从判断
+    // 哪些是动态头，全部纳入哈希（保持原样，与旧行为一致）。
     if let Some(systems) = req.system.as_ref() {
-        let skip_until = systems
-            .iter()
-            .position(|s| s.cache_control.is_some())
-            .unwrap_or(0);
-        // 被跳过的动态头部：**只计入 prompt_total 分母**，不进哈希、不进缓存段。
-        // 它每轮变化、且客户端故意不打 cache_control，属未缓存的真 input；漏计它
-        // 会缩小分母、高估 cache_read/creation。（哈希链仍从首个 cache_control 起）。
-        for sys in systems.iter().take(skip_until) {
-            dynamic_prefix_tokens =
-                dynamic_prefix_tokens.saturating_add(estimate_tokens(&sys.text).max(0) as u32);
-        }
-        for sys in systems.iter().skip(skip_until) {
-            feed(&mut hasher, &system_signature(sys), &sys.text, &mut cum_tokens);
+        let any_cc = systems.iter().any(|s| s.cache_control.is_some());
+        for sys in systems {
+            if any_cc && sys.cache_control.is_none() {
+                // 动态头部：只计入分母，不进哈希 / 缓存段
+                dynamic_prefix_tokens =
+                    dynamic_prefix_tokens.saturating_add(estimate_tokens(&sys.text).max(0) as u32);
+            } else {
+                feed(&mut hasher, &system_signature(sys), &sys.text, &mut cum_tokens);
+            }
         }
     }
 

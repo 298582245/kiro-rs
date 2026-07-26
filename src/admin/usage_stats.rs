@@ -324,6 +324,8 @@ pub struct CredentialDistribution {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub errors: u64,
+    /// 该凭据在窗口内累计的 credit 计费量（上游 meteringEvent 上报）
+    pub credits: f64,
 }
 
 /// 概览：今日 + 累计
@@ -534,6 +536,7 @@ impl UsageAggregator {
                 entry.output_tokens += stats.output_tokens;
                 entry.calls += stats.calls;
                 entry.errors += stats.errors;
+                entry.credits += stats.credits;
             }
         }
         let mut out: Vec<CredentialDistribution> = acc
@@ -544,6 +547,7 @@ impl UsageAggregator {
                 input_tokens: stats.input_tokens,
                 output_tokens: stats.output_tokens,
                 errors: stats.errors,
+                credits: stats.credits,
             })
             .collect();
         out.sort_by(|a, b| b.calls.cmp(&a.calls));

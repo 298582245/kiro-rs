@@ -458,6 +458,8 @@ export interface CredentialDistribution {
   inputTokens: number
   outputTokens: number
   errors: number
+  /** 该凭据在窗口内累计的 credit 计费量（上游 meteringEvent 上报） */
+  credits: number
 }
 
 // ============ 请求链路追踪 ============

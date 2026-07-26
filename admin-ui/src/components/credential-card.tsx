@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { toast } from "sonner";
 import {
   RefreshCw,
+  Coins,
   GripVertical,
   Trash2,
   Loader2,
@@ -40,7 +41,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { CredentialStatusItem, BalanceResponse } from "@/types/api";
-import { maskProxyUrl, extractErrorMessage, overageFailureMessage } from "@/lib/utils";
+import { maskProxyUrl, extractErrorMessage, overageFailureMessage, formatCredits } from "@/lib/utils";
 import {
   useSetDisabled,
   useSetPriority,
@@ -69,6 +70,8 @@ interface CredentialCardProps {
   onRefreshBalance: () => void;
   /** 该凭据的失败分类计数（来自 trace 聚合）；无数据时回退 totalFailureCount */
   failureStats?: { auth: number; throttle: number; other: number };
+  /** 该凭据在选定时间范围内累计的 credit 消耗（来自 by-credential 聚合） */
+  credits?: number;
   /** 展示形态：卡片（默认）或紧凑列表行 */
   view?: "card" | "list";
 }
@@ -195,6 +198,7 @@ export function CredentialCard({
   loadingBalance,
   onRefreshBalance,
   failureStats,
+  credits,
   view = "card",
 }: CredentialCardProps) {
   const [editingPriority, setEditingPriority] = useState(false);
@@ -705,6 +709,16 @@ export function CredentialCard({
             <RotateCcw className="h-3 w-3 opacity-70" />
           </button>
         </div>
+
+        <div className="w-20 text-center">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Credit
+          </div>
+          <div className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 text-sm font-medium tabular-nums text-amber-600 dark:text-amber-500">
+            <Coins className="h-3 w-3 opacity-70" />
+            {formatCredits(credits)}
+          </div>
+        </div>
       </div>
 
       {/* 余额（大屏） */}
@@ -958,6 +972,15 @@ export function CredentialCard({
                   {credential.successCount}
                   <RotateCcw className="h-3 w-3 opacity-70" />
                 </button>
+              </dd>
+            </div>
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <dt className="flex shrink-0 items-center gap-1 text-muted-foreground">
+                <Coins className="h-3 w-3 opacity-70" />
+                Credit
+              </dt>
+              <dd className="min-w-0 truncate text-right font-medium tabular-nums text-amber-600 dark:text-amber-500">
+                {formatCredits(credits)}
               </dd>
             </div>
             <div className="flex min-w-0 items-center justify-between gap-2 border-t border-border/50 pt-2 min-[420px]:col-span-2">
